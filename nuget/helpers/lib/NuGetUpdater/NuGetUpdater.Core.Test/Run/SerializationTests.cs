@@ -60,6 +60,92 @@ public class SerializationTests
     }
 
     [Fact]
+    public void DeserializeExperimentsManager()
+    {
+        var jobWrapper = RunWorker.Deserialize("""
+            {
+              "job": {
+                "package-manager": "nuget",
+                "allowed-updates": [
+                  {
+                    "update-type": "all"
+                  }
+                ],
+                "source": {
+                  "provider": "github",
+                  "repo": "some-org/some-repo",
+                  "directory": "some-dir"
+                },
+                "experiments": {
+                  "nuget_legacy_dependency_solver": true,
+                  "unexpected_bool": true,
+                  "unexpected_number": 42,
+                  "unexpected_null": null,
+                  "unexpected_string": "abc",
+                  "unexpected_array": [1, "two", 3.0],
+                  "unexpected_object": {
+                    "a": 1,
+                    "b": "two"
+                  }
+                }
+              }
+            }
+            """);
+        var experimentsManager = ExperimentsManager.GetExperimentsManager(jobWrapper.Job.Experiments);
+        Assert.True(experimentsManager.UseLegacyDependencySolver);
+    }
+
+    [Fact]
+    public void DeserializeExperimentsManager_EmptyExperiments()
+    {
+        var jobWrapper = RunWorker.Deserialize("""
+            {
+              "job": {
+                "package-manager": "nuget",
+                "allowed-updates": [
+                  {
+                    "update-type": "all"
+                  }
+                ],
+                "source": {
+                  "provider": "github",
+                  "repo": "some-org/some-repo",
+                  "directory": "some-dir"
+                },
+                "experiments": {
+                }
+              }
+            }
+            """);
+        var experimentsManager = ExperimentsManager.GetExperimentsManager(jobWrapper.Job.Experiments);
+        Assert.False(experimentsManager.UseLegacyDependencySolver);
+    }
+
+    [Fact]
+    public void DeserializeExperimentsManager_NoExperiments()
+    {
+        var jobWrapper = RunWorker.Deserialize("""
+            {
+              "job": {
+                "package-manager": "nuget",
+                "allowed-updates": [
+                  {
+                    "update-type": "all"
+                  }
+                ],
+                "source": {
+                  "provider": "github",
+                  "repo": "some-org/some-repo",
+                  "directory": "some-dir"
+                }
+              }
+            }
+            """);
+        var experimentsManager = ExperimentsManager.GetExperimentsManager(jobWrapper.Job.Experiments);
+        Assert.False(experimentsManager.UseLegacyDependencySolver);
+    }
+
+    [Fact]
     public void SerializeError()
     {
         var error = new JobRepoNotFound("some message");

@@ -1,3 +1,6 @@
+using NuGetUpdater.Core.Test.Updater;
+using NuGetUpdater.Core.Updater;
+
 using Xunit;
 
 namespace NuGetUpdater.Core.Test.Update;
@@ -88,7 +91,8 @@ public abstract class UpdateWorkerTestBase : TestBase
         TestFile[]? additionalFiles = null,
         TestFile[]? additionalFilesExpected = null,
         MockNuGetPackage[]? packages = null,
-        string projectFilePath = "test-project.csproj")
+        string projectFilePath = "test-project.csproj",
+        ExpectedUpdateOperationResult? expectedResult = null)
         => TestUpdateForProject(
             dependencyName,
             oldVersion,
@@ -98,7 +102,8 @@ public abstract class UpdateWorkerTestBase : TestBase
             isTransitive,
             additionalFiles,
             additionalFilesExpected,
-            packages);
+            packages,
+            expectedResult);
 
     protected static async Task TestUpdateForProject(
         string dependencyName,
@@ -109,7 +114,8 @@ public abstract class UpdateWorkerTestBase : TestBase
         bool isTransitive = false,
         TestFile[]? additionalFiles = null,
         TestFile[]? additionalFilesExpected = null,
-        MockNuGetPackage[]? packages = null)
+        MockNuGetPackage[]? packages = null,
+        ExpectedUpdateOperationResult? expectedResult = null)
     {
         additionalFiles ??= [];
         additionalFilesExpected ??= [];
@@ -128,18 +134,35 @@ public abstract class UpdateWorkerTestBase : TestBase
             await MockNuGetPackagesInDirectory(packages, temporaryDirectory);
 
             // run update
-            var worker = new UpdaterWorker(new Logger(verbose: true));
+            var worker = new UpdaterWorker(new TestLogger());
             var projectPath = placeFilesInSrc ? $"src/{projectFilePath}" : projectFilePath;
-            await worker.RunAsync(temporaryDirectory, projectPath, dependencyName, oldVersion, newVersion, isTransitive);
+            var actualResult = await worker.RunWithErrorHandlingAsync(temporaryDirectory, projectPath, dependencyName, oldVersion, newVersion, isTransitive);
+            if (expectedResult is { })
+            {
+                ValidateUpdateOperationResult(expectedResult, actualResult!);
+            }
         });
 
-        var expectedResult = additionalFilesExpected.Prepend((projectFilePath, expectedProjectContents)).ToArray();
+        var expectedResultFiles = additionalFilesExpected.Prepend((projectFilePath, expectedProjectContents)).ToArray();
         if (placeFilesInSrc)
         {
-            expectedResult = expectedResult.Select(er => ($"src/{er.Item1}", er.Item2)).ToArray();
+            expectedResultFiles = expectedResultFiles.Select(er => ($"src/{er.Item1}", er.Item2)).ToArray();
         }
 
-        AssertContainsFiles(expectedResult, actualResult);
+        AssertContainsFiles(expectedResultFiles, actualResult);
+    }
+
+    protected static void ValidateUpdateOperationResult(ExpectedUpdateOperationResult expectedResult, UpdateOperationResult actualResult)
+    {
+        Assert.Equal(expectedResult.ErrorType, actualResult.ErrorType);
+        if (expectedResult.ErrorDetailsRegex is not null && actualResult.ErrorDetails is string errorDetails)
+        {
+            Assert.Matches(expectedResult.ErrorDetailsRegex, errorDetails);
+        }
+        else
+        {
+            Assert.Equivalent(expectedResult.ErrorDetails, actualResult.ErrorDetails);
+        }
     }
 
     protected static Task TestNoChangeforSolution(
@@ -214,7 +237,7 @@ public abstract class UpdateWorkerTestBase : TestBase
             await MockNuGetPackagesInDirectory(packages, temporaryDirectory);
 
             var slnPath = Path.Combine(temporaryDirectory, slnName);
-            var worker = new UpdaterWorker(new Logger(verbose: true));
+            var worker = new UpdaterWorker(new TestLogger());
             await worker.RunAsync(temporaryDirectory, slnPath, dependencyName, oldVersion, newVersion, isTransitive);
         });
 
@@ -237,25 +260,26 @@ public abstract class UpdateWorkerTestBase : TestBase
                 package.WriteToDirectory(localFeedPath);
             }
 
-            // override various nuget locations
-            foreach (var envName in new[] { "NUGET_PACKAGES", "NUGET_HTTP_CACHE_PATH", "NUGET_SCRATCH", "NUGET_PLUGINS_CACHE_PATH" })
-            {
-                string dir = Path.Join(temporaryDirectory, envName);
-                Directory.CreateDirectory(dir);
-                Environment.SetEnvironmentVariable(envName, dir);
-            }
-
             // ensure only the test feed is used
+            string relativeLocalFeedPath = Path.GetRelativePath(temporaryDirectory, localFeedPath);
             await File.WriteAllTextAsync(Path.Join(temporaryDirectory, "NuGet.Config"), $"""
                 <?xml version="1.0" encoding="utf-8"?>
                 <configuration>
                   <packageSources>
                     <clear />
-                    <add key="local-feed" value="{localFeedPath}" />
+                    <add key="local-feed" value="{relativeLocalFeedPath}" />
                   </packageSources>
                 </configuration>
                 """
             );
+        }
+
+        // override various nuget locations
+        foreach (var envName in new[] { "NUGET_PACKAGES", "NUGET_HTTP_CACHE_PATH", "NUGET_SCRATCH", "NUGET_PLUGINS_CACHE_PATH" })
+        {
+            string dir = Path.Join(temporaryDirectory, envName);
+            Directory.CreateDirectory(dir);
+            Environment.SetEnvironmentVariable(envName, dir);
         }
     }
 

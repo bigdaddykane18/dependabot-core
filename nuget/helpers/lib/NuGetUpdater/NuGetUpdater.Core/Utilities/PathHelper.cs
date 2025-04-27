@@ -1,7 +1,3 @@
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-
 namespace NuGetUpdater.Core;
 
 internal static class PathHelper
@@ -29,7 +25,43 @@ internal static class PathHelper
             : Path.Combine(path1, path2);
     }
 
+    public static string EnsurePrefix(this string s, string prefix) => s.StartsWith(prefix) ? s : prefix + s;
+
+    public static string EnsureSuffix(this string s, string suffix) => s.EndsWith(suffix) ? s : s + suffix;
+
     public static string NormalizePathToUnix(this string path) => path.Replace("\\", "/");
+
+    public static string NormalizeUnixPathParts(this string path)
+    {
+        var parts = path.Split('/');
+        var resultantParts = new List<string>();
+        foreach (var part in parts)
+        {
+            switch (part)
+            {
+                case "":
+                case ".":
+                    break;
+                case "..":
+                    if (resultantParts.Count > 0)
+                    {
+                        resultantParts.RemoveAt(resultantParts.Count - 1);
+                    }
+                    break;
+                default:
+                    resultantParts.Add(part);
+                    break;
+            }
+        }
+
+        var result = string.Join("/", resultantParts);
+        if (path.StartsWith("/") && !result.StartsWith("/"))
+        {
+            result = "/" + result;
+        }
+
+        return result;
+    }
 
     public static string GetFullPathFromRelative(string rootPath, string relativePath)
         => Path.GetFullPath(JoinPath(rootPath, relativePath.NormalizePathToUnix()));

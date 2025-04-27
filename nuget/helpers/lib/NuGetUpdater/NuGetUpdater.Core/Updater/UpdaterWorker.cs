@@ -1,16 +1,88 @@
+using System.Net;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+using NuGetUpdater.Core.Analyze;
+using NuGetUpdater.Core.Updater;
+
 namespace NuGetUpdater.Core;
 
 public class UpdaterWorker
 {
-    private readonly Logger _logger;
+    private readonly ILogger _logger;
     private readonly HashSet<string> _processedProjectPaths = new(StringComparer.OrdinalIgnoreCase);
 
-    public UpdaterWorker(Logger logger)
+    internal static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    public UpdaterWorker(ILogger logger)
     {
         _logger = logger;
     }
 
-    public async Task RunAsync(string repoRootPath, string workspacePath, string dependencyName, string previousDependencyVersion, string newDependencyVersion, bool isTransitive)
+    public async Task RunAsync(string repoRootPath, string workspacePath, string dependencyName, string previousDependencyVersion, string newDependencyVersion, bool isTransitive, string? resultOutputPath = null)
+    {
+        var result = await RunWithErrorHandlingAsync(repoRootPath, workspacePath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive);
+        if (resultOutputPath is { })
+        {
+            await WriteResultFile(result, resultOutputPath, _logger);
+        }
+    }
+
+    // this is a convenient method for tests
+    internal async Task<UpdateOperationResult> RunWithErrorHandlingAsync(string repoRootPath, string workspacePath, string dependencyName, string previousDependencyVersion, string newDependencyVersion, bool isTransitive)
+    {
+        UpdateOperationResult result = new(); // assumed to be ok until proven otherwise
+        try
+        {
+            result = await RunAsync(repoRootPath, workspacePath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive);
+        }
+        catch (HttpRequestException ex)
+        when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            if (!Path.IsPathRooted(workspacePath) || !File.Exists(workspacePath))
+            {
+                workspacePath = Path.GetFullPath(Path.Join(repoRootPath, workspacePath));
+            }
+
+            result = new()
+            {
+                ErrorType = ErrorType.AuthenticationFailure,
+                ErrorDetails = "(" + string.Join("|", NuGetContext.GetPackageSourceUrls(workspacePath)) + ")",
+            };
+        }
+        catch (MissingFileException ex)
+        {
+            result = new()
+            {
+                ErrorType = ErrorType.MissingFile,
+                ErrorDetails = ex.FilePath,
+            };
+        }
+        catch (UpdateNotPossibleException ex)
+        {
+            result = new()
+            {
+                ErrorType = ErrorType.UpdateNotPossible,
+                ErrorDetails = ex.Dependencies,
+            };
+        }
+        catch (Exception ex)
+        {
+            result = new()
+            {
+                ErrorType = ErrorType.Unknown,
+                ErrorDetails = ex.ToString(),
+            };
+        }
+
+        return result;
+    }
+
+    public async Task<UpdateOperationResult> RunAsync(string repoRootPath, string workspacePath, string dependencyName, string previousDependencyVersion, string newDependencyVersion, bool isTransitive)
     {
         MSBuildHelper.RegisterMSBuild(Environment.CurrentDirectory, repoRootPath);
 
@@ -47,6 +119,15 @@ public class UpdaterWorker
         _logger.Log("Update complete.");
 
         _processedProjectPaths.Clear();
+        return new UpdateOperationResult();
+    }
+
+    internal static async Task WriteResultFile(UpdateOperationResult result, string resultOutputPath, ILogger logger)
+    {
+        logger.Log($"  Writing update result to [{resultOutputPath}].");
+
+        var resultJson = JsonSerializer.Serialize(result, SerializerOptions);
+        await File.WriteAllTextAsync(resultOutputPath, resultJson);
     }
 
     private async Task RunForSolutionAsync(
@@ -140,6 +221,12 @@ public class UpdaterWorker
         }
 
         // Some repos use a mix of packages.config and PackageReference
-        await SdkPackageUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
+        await PackageReferenceUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
+
+        // Update lock file if exists
+        if (File.Exists(Path.Combine(Path.GetDirectoryName(projectPath), "packages.lock.json")))
+        {
+            await LockFileUpdater.UpdateLockFileAsync(repoRootPath, projectPath, _logger);
+        }
     }
 }

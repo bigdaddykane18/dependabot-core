@@ -34,15 +34,16 @@ module Dependabot
       end
 
       sig do
-        params(
-          source: Dependabot::Source,
-          credentials: T::Array[Credential],
-          repo_contents_path: T.nilable(String),
-          options: T::Hash[String, String]
-        ).void
+        override
+          .params(
+            source: Dependabot::Source,
+            credentials: T::Array[Credential],
+            repo_contents_path: T.nilable(String),
+            options: T::Hash[String, String]
+          ).void
       end
       def initialize(source:, credentials:, repo_contents_path: nil, options: {})
-        super(source: source, credentials: credentials, repo_contents_path: repo_contents_path, options: options)
+        super
 
         @sln_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
         @sln_project_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
@@ -50,20 +51,24 @@ module Dependabot
         @fetched_files = T.let({}, T::Hash[String, T::Array[Dependabot::DependencyFile]])
         @nuget_config_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
         @packages_config_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
+        @assembly_binding_redirect_config_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
+        @packages_lock_files = T.let(nil, T.nilable(T::Array[Dependabot::DependencyFile]))
       end
 
       sig { override.returns(T::Array[DependencyFile]) }
       def fetch_files
-        fetched_files = []
-        fetched_files += project_files
-        fetched_files += directory_build_files
-        fetched_files += imported_property_files
-
-        fetched_files += packages_config_files
-        fetched_files += nuget_config_files
-        fetched_files << global_json if global_json
-        fetched_files << dotnet_tools_json if dotnet_tools_json
-        fetched_files << packages_props if packages_props
+        fetched_files = [
+          *project_files,
+          *directory_build_files,
+          *imported_property_files,
+          *packages_config_files,
+          *assembly_binding_redirect_config_files,
+          *nuget_config_files,
+          *packages_lock_files,
+          global_json,
+          dotnet_tools_json,
+          packages_props
+        ].compact
 
         # dedup files based on their absolute path
         fetched_files = fetched_files.uniq do |fetched_file|
@@ -116,13 +121,26 @@ module Dependabot
       def packages_config_files
         return @packages_config_files if @packages_config_files
 
+        imported_project_files = imported_property_files.filter { |f| f.name.match?(/\.(cs|vb|fs)proj$/) }
+
+        @packages_config_files = [*project_files, *imported_project_files].filter_map do |f|
+          named_file_next_to_project_file(f, "packages.config")
+        end
+      end
+
+      sig { returns(T::Array[Dependabot::DependencyFile]) }
+      def assembly_binding_redirect_config_files
+        return @assembly_binding_redirect_config_files if @assembly_binding_redirect_config_files
+
         candidate_paths =
           [*project_files.map { |f| File.dirname(f.name) }, "."].uniq
 
-        @packages_config_files =
+        # Assembly binding redirects can appear in any app/web.config file for a .NET Framework project
+        # https://learn.microsoft.com/en-us/dotnet/framework/configure-apps/redirect-assembly-versions#specify-assembly-binding-in-configuration-files
+        @assembly_binding_redirect_config_files =
           candidate_paths.filter_map do |dir|
             file = repo_contents(dir: dir)
-                   .find { |f| f.name.casecmp("packages.config").zero? }
+                   .find { |f| f.name.match?(/^(app|web)\.config$/i) }
             fetch_file_from_host(File.join(dir, file.name)) if file
           end
       end
@@ -246,6 +264,21 @@ module Dependabot
         @nuget_config_files
       end
 
+      sig { returns(T::Array[Dependabot::DependencyFile]) }
+      def packages_lock_files
+        return @packages_lock_files if @packages_lock_files
+
+        candidate_paths =
+          [*project_files.map { |f| File.dirname(f.name) }, "."].uniq
+
+        @packages_lock_files =
+          candidate_paths.filter_map do |dir|
+            file = repo_contents(dir: dir)
+                   .find { |f| f.name.casecmp("packages.lock.json").zero? }
+            fetch_file_from_host(File.join(dir, file.name)) if file
+          end
+      end
+
       sig do
         params(
           project_file: Dependabot::DependencyFile,
@@ -270,6 +303,32 @@ module Dependabot
             found_expected_file = fetch_file_from_host(File.join(relative_candidate_directory,
                                                                  candidate_file.name))
           end
+        end
+
+        found_expected_file
+      end
+
+      sig do
+        params(
+          project_file: Dependabot::DependencyFile,
+          expected_file_name: String
+        )
+          .returns(T.nilable(Dependabot::DependencyFile))
+      end
+      def named_file_next_to_project_file(project_file, expected_file_name)
+        found_expected_file = T.let(nil, T.nilable(Dependabot::DependencyFile))
+        directory_path = Pathname.new(directory)
+        full_project_dir = Pathname.new(project_file.directory).join(project_file.name).dirname
+
+        candidate_file_path = Pathname.new(full_project_dir).join(expected_file_name).cleanpath.to_path
+        candidate_directory = Pathname.new(File.dirname(candidate_file_path))
+        relative_candidate_directory = candidate_directory.relative_path_from(directory_path)
+        candidate_file = repo_contents(dir: relative_candidate_directory).find do |f|
+          f.name.casecmp?(expected_file_name)
+        end
+        if candidate_file
+          found_expected_file = fetch_file_from_host(File.join(relative_candidate_directory,
+                                                               candidate_file.name))
         end
 
         found_expected_file
@@ -318,6 +377,7 @@ module Dependabot
       end
       def fetch_imported_property_files(file:, previously_fetched_files:)
         file_id = file.directory + "/" + file.name
+
         if @fetched_files[file_id]
           T.must(@fetched_files[file_id])
         else
@@ -326,23 +386,37 @@ module Dependabot
             ImportPathsFinder.new(project_file: file).project_reference_paths +
             ImportPathsFinder.new(project_file: file).project_file_paths
 
-          paths.filter_map do |path|
+          # Initialize a set to hold fetched files temporarily to avoid duplicates
+          fetched_files_set = Set.new([file])
+
+          paths.each do |path|
             next if previously_fetched_files.map(&:name).include?(path)
             next if file.name == path
             next if path.include?("$(")
 
-            fetched_file = fetch_file_from_host(path)
-            grandchild_property_files = fetch_imported_property_files(
-              file: fetched_file,
-              previously_fetched_files: previously_fetched_files + [file]
-            )
-            @fetched_files[file_id] = [fetched_file, *grandchild_property_files]
-            @fetched_files[file_id]
-          rescue Dependabot::DependencyFileNotFound
-            # Don't worry about missing files too much for now (at least
-            # until we start resolving properties)
-            nil
-          end.flatten
+            begin
+              fetched_file = fetch_file_from_host(path)
+              grandchild_property_files = fetch_imported_property_files(
+                file: fetched_file,
+                previously_fetched_files: previously_fetched_files + [file]
+              )
+
+              # Add fetched file and grandchild property files to the set
+              fetched_files_set << fetched_file
+              fetched_files_set.merge(grandchild_property_files)
+            rescue Dependabot::DependencyFileNotFound
+              # Don't worry about missing files, just skip them for now
+              Dependabot.logger.info("unable to find expected file #{file.name}")
+              nil
+            end
+          end
+
+          # Convert the set to an array and cache the fetched files
+          fetched_files = fetched_files_set.to_a
+          @fetched_files[file_id] = fetched_files
+
+          # Return the fetched files
+          fetched_files
         end
       end
     end

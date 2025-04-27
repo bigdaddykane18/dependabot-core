@@ -7,7 +7,6 @@ using NuGetUpdater.Core.Test.Update;
 using NuGetUpdater.Core.Test.Utilities;
 
 using Xunit;
-using Xunit.Sdk;
 
 namespace NuGetUpdater.Core.Test.Discover;
 
@@ -25,8 +24,9 @@ public class DiscoveryWorkerTestBase
         {
             await UpdateWorkerTestBase.MockNuGetPackagesInDirectory(packages, directoryPath);
 
-            var worker = new DiscoveryWorker(new Logger(verbose: true));
-            await worker.RunAsync(directoryPath, workspacePath, DiscoveryWorker.DiscoveryResultFileName);
+            var worker = new DiscoveryWorker(new TestLogger());
+            var result = await worker.RunWithErrorHandlingAsync(directoryPath, workspacePath);
+            return result;
         });
 
         ValidateWorkspaceResult(expectedResult, actualResult);
@@ -35,12 +35,14 @@ public class DiscoveryWorkerTestBase
     protected static void ValidateWorkspaceResult(ExpectedWorkspaceDiscoveryResult expectedResult, WorkspaceDiscoveryResult actualResult)
     {
         Assert.NotNull(actualResult);
-        Assert.Equal(expectedResult.FilePath.NormalizePathToUnix(), actualResult.FilePath.NormalizePathToUnix());
+        Assert.Equal(expectedResult.Path.NormalizePathToUnix(), actualResult.Path.NormalizePathToUnix());
         ValidateDirectoryPackagesProps(expectedResult.DirectoryPackagesProps, actualResult.DirectoryPackagesProps);
         ValidateResultWithDependencies(expectedResult.GlobalJson, actualResult.GlobalJson);
         ValidateResultWithDependencies(expectedResult.DotNetToolsJson, actualResult.DotNetToolsJson);
         ValidateProjectResults(expectedResult.Projects, actualResult.Projects);
         Assert.Equal(expectedResult.ExpectedProjectCount ?? expectedResult.Projects.Length, actualResult.Projects.Length);
+        Assert.Equal(expectedResult.ErrorType, actualResult.ErrorType);
+        Assert.Equal(expectedResult.ErrorDetails, actualResult.ErrorDetails);
 
         return;
 
@@ -107,18 +109,14 @@ public class DiscoveryWorkerTestBase
         }
     }
 
-    protected static async Task<WorkspaceDiscoveryResult> RunDiscoveryAsync(TestFile[] files, Func<string, Task> action)
+    protected static async Task<WorkspaceDiscoveryResult> RunDiscoveryAsync(TestFile[] files, Func<string, Task<WorkspaceDiscoveryResult>> action)
     {
         // write initial files
         using var temporaryDirectory = await TemporaryDirectory.CreateWithContentsAsync(files);
 
         // run discovery
-        await action(temporaryDirectory.DirectoryPath);
-
-        // gather results
-        var resultPath = Path.Join(temporaryDirectory.DirectoryPath, DiscoveryWorker.DiscoveryResultFileName);
-        var resultJson = await File.ReadAllTextAsync(resultPath);
-        return JsonSerializer.Deserialize<WorkspaceDiscoveryResult>(resultJson, DiscoveryWorker.SerializerOptions)!;
+        var result = await action(temporaryDirectory.DirectoryPath);
+        return result;
     }
 
     internal class PropertyComparer : IEqualityComparer<Property>

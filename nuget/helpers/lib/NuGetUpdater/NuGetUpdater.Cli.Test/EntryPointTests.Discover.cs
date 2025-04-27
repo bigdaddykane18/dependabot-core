@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.Json;
 
 using NuGetUpdater.Core;
+using NuGetUpdater.Core.Discover;
 using NuGetUpdater.Core.Test;
 using NuGetUpdater.Core.Test.Discover;
 using NuGetUpdater.Core.Test.Update;
@@ -25,6 +27,8 @@ public partial class EntryPointTests
                     path,
                     "--workspace",
                     "path/to/some directory with spaces",
+                    "--output",
+                    Path.Combine(path, DiscoveryWorker.DiscoveryResultFileName),
                 ],
                 packages: [],
                 initialFiles:
@@ -42,7 +46,7 @@ public partial class EntryPointTests
                 ],
                 expectedResult: new()
                 {
-                    FilePath = "path/to/some directory with spaces",
+                    Path = "path/to/some directory with spaces",
                     Projects = [
                         new()
                         {
@@ -72,6 +76,8 @@ public partial class EntryPointTests
                     path,
                     "--workspace",
                     "/",
+                    "--output",
+                    Path.Combine(path, DiscoveryWorker.DiscoveryResultFileName),
                 ],
                 packages:
                 [
@@ -129,7 +135,7 @@ public partial class EntryPointTests
                 },
                 expectedResult: new()
                 {
-                    FilePath = "",
+                    Path = "",
                     Projects = [
                         new()
                         {
@@ -159,6 +165,8 @@ public partial class EntryPointTests
                     path,
                     "--workspace",
                     "path/to",
+                    "--output",
+                    Path.Combine(path, DiscoveryWorker.DiscoveryResultFileName),
                 ],
                 packages:
                 [
@@ -193,7 +201,7 @@ public partial class EntryPointTests
                 },
                 expectedResult: new()
                 {
-                    FilePath = "path/to",
+                    Path = "path/to",
                     Projects = [
                         new()
                         {
@@ -224,6 +232,8 @@ public partial class EntryPointTests
                     path,
                     "--workspace",
                     workspacePath,
+                    "--output",
+                    Path.Combine(path, DiscoveryWorker.DiscoveryResultFileName),
                 ],
                 packages:
                 [
@@ -258,7 +268,7 @@ public partial class EntryPointTests
                 },
                 expectedResult: new()
                 {
-                    FilePath = workspacePath,
+                    Path = workspacePath,
                     Projects = [
                         new()
                         {
@@ -282,69 +292,72 @@ public partial class EntryPointTests
         public async Task WithDuplicateDependenciesOfDifferentTypes()
         {
             await RunAsync(path =>
-            [
-                "discover",
-                "--repo-root",
-                path,
-                "--workspace",
-                "path/to",
-            ],
-            new[]
-            {
-                ("path/to/my.csproj", """
-                    <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-                      <PropertyGroup>
-                        <TargetFramework>net8.0</TargetFramework>
-                      </PropertyGroup>
-                      <ItemGroup>
-                        <PackageReference Include="Newtonsoft.Json" Version="7.0.1" />
-                      </ItemGroup>
-                      <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-                    </Project>
-                    """),
-                ("path/Directory.Build.props", """
-                    <Project>
-                        <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' == 'true'">
-                          <GlobalPackageReference Include="System.Text.Json" Version="8.0.3" />
-                        </ItemGroup>
-                        <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' != 'true'">
-                          <PackageReference Include="System.Text.Json" Version="8.0.3" />
-                        </ItemGroup>
-                    </Project>
-                    """)
-            },
-            expectedResult: new()
-            {
-                FilePath = "path/to",
-                Projects = [
-                    new()
-                    {
-                        FilePath = "my.csproj",
-                        TargetFrameworks = ["net8.0"],
-                        ReferencedProjectPaths = [],
-                        ExpectedDependencyCount = 2,
-                        Dependencies = [
-                            new("Newtonsoft.Json", "7.0.1", DependencyType.PackageReference, TargetFrameworks: ["net8.0"], IsDirect: true),
-                            // $(ManagePackageVersionsCentrally) evaluates false by default, we only get a PackageReference
-                            new("System.Text.Json", "8.0.3", DependencyType.PackageReference, TargetFrameworks: ["net8.0"])
-                        ],
-                        Properties = [
-                            new("TargetFramework", "net8.0", "path/to/my.csproj"),
-                        ],
-                    },
-                    new()
-                    {
-                        FilePath = "../Directory.Build.props",
-                        ReferencedProjectPaths = [],
-                        ExpectedDependencyCount = 2,
-                        Dependencies = [
-                            new("System.Text.Json", "8.0.3", DependencyType.PackageReference, IsDirect: true),
-                            new("System.Text.Json", "8.0.3", DependencyType.GlobalPackageReference, IsDirect: true)
-                        ],
-                        Properties = [],
-                    }
-                ]
-            });
+                [
+                    "discover",
+                    "--repo-root",
+                    path,
+                    "--workspace",
+                    "path/to",
+                    "--output",
+                    Path.Combine(path, DiscoveryWorker.DiscoveryResultFileName)
+                ],
+                new[]
+                {
+                    ("path/to/my.csproj", """
+                        <Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+                          <PropertyGroup>
+                            <TargetFramework>net8.0</TargetFramework>
+                          </PropertyGroup>
+                          <ItemGroup>
+                            <PackageReference Include="Newtonsoft.Json" Version="7.0.1" />
+                          </ItemGroup>
+                          <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+                        </Project>
+                        """),
+                    ("path/Directory.Build.props", """
+                        <Project>
+                            <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' == 'true'">
+                              <GlobalPackageReference Include="System.Text.Json" Version="8.0.3" />
+                            </ItemGroup>
+                            <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' != 'true'">
+                              <PackageReference Include="System.Text.Json" Version="8.0.3" />
+                            </ItemGroup>
+                        </Project>
+                        """)
+                },
+                expectedResult: new()
+                {
+                    Path = "path/to",
+                    Projects = [
+                        new()
+                        {
+                            FilePath = "my.csproj",
+                            TargetFrameworks = ["net8.0"],
+                            ReferencedProjectPaths = [],
+                            ExpectedDependencyCount = 2,
+                            Dependencies = [
+                                new("Newtonsoft.Json", "7.0.1", DependencyType.PackageReference, TargetFrameworks: ["net8.0"], IsDirect: true),
+                                // $(ManagePackageVersionsCentrally) evaluates false by default, we only get a PackageReference
+                                new("System.Text.Json", "8.0.3", DependencyType.PackageReference, TargetFrameworks: ["net8.0"])
+                            ],
+                            Properties = [
+                                new("TargetFramework", "net8.0", "path/to/my.csproj"),
+                            ],
+                        },
+                        new()
+                        {
+                            FilePath = "../Directory.Build.props",
+                            ReferencedProjectPaths = [],
+                            ExpectedDependencyCount = 2,
+                            Dependencies = [
+                                new("System.Text.Json", "8.0.3", DependencyType.PackageReference, IsDirect: true),
+                                new("System.Text.Json", "8.0.3", DependencyType.GlobalPackageReference, IsDirect: true)
+                            ],
+                            Properties = [],
+                        }
+                    ]
+                }
+            );
         }
 
         private static async Task RunAsync(
@@ -378,6 +391,11 @@ public partial class EntryPointTests
                     Console.SetOut(originalOut);
                     Console.SetError(originalErr);
                 }
+
+                var resultPath = Path.Join(path, DiscoveryWorker.DiscoveryResultFileName);
+                var resultJson = await File.ReadAllTextAsync(resultPath);
+                var resultObject = JsonSerializer.Deserialize<WorkspaceDiscoveryResult>(resultJson, DiscoveryWorker.SerializerOptions);
+                return resultObject!;
             });
 
             ValidateWorkspaceResult(expectedResult, actualResult);
